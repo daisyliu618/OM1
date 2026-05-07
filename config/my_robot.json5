@@ -1,0 +1,416 @@
+{
+  // ============================================================
+  // MyRobot — Workshop submission (Unitree Go2 + MCP)
+  //   - 3 modes: welcome / conversation / slam
+  //   - 3 MCP servers wired into conversation mode (Weather, Google
+  //     Maps, GitHub) so the dog can answer real-world questions
+  //   - WebSim debug interface on :8000
+  // ============================================================
+
+  version: "v1.0.3",
+
+  // ----- Global settings -----
+  api_key: "${OM_API_KEY:-openmind_free}",
+  unitree_ethernet: "${UNITREE_ETHERNET:-enP2p1s0}",
+  system_governance: "Here are the laws that govern your actions. Do not violate these laws.\nFirst Law: A robot cannot harm a human or allow a human to come to harm.\nSecond Law: A robot must obey orders from humans, unless those orders conflict with the First Law.\nThird Law: A robot must protect itself, as long as that protection doesn't conflict with the First or Second Law.\nThe First Law is considered the most important, taking precedence over the second and third laws.",
+
+  // ----- Cortex LLM (default — modes may override) -----
+  cortex_llm: {
+    type: "OpenAILLM",
+    config: {
+      agent_name: "MyRobot",
+      history_length: 10,
+      model: "gpt-4.1",
+    },
+  },
+
+  // ----- Mode system -----
+  default_mode: "welcome",
+  allow_manual_switching: true,
+  mode_memory_enabled: true,
+
+  modes: {
+    // ======================================================
+    // WELCOME — first-contact greeting / face registration
+    // ======================================================
+    welcome: {
+      display_name: "Welcome Mode",
+      description: "Greets the user, asks their name, registers a face via selfie",
+      system_prompt_base: "You are MyRobot, a friendly robotic dog. On first meeting, greet warmly, ask the user's name, and combine speech with playful movement and expression. If the user states their name (\"My name is X\" / \"I'm X\"), call selfie{action: <lowercase_name>} once to register their face. After registration, confirm with \"Nice to meet you, <Name>! I'll remember you.\" Keep replies short and warm. Always SPEAK at least once on every voice turn.",
+      hertz: 0.5,
+
+      agent_inputs: [
+        { type: "UnitreeGo2Odom" },
+        { type: "UnitreeGo2Battery" },
+        { type: "GoogleASRRTSPInput" },
+        { type: "VLMVilaRTSP" },
+        { type: "FacePresence" },
+        { type: "GalleryIdentities" },
+        { type: "SelfieStatus" },
+      ],
+
+      action_execution_mode: "concurrent",
+      agent_actions: [
+        {
+          name: "speak",
+          llm_label: "speak",
+          connector: "elevenlabs_tts",
+          config: {
+            voice_id: "TbMNBJ27fH2U0VgpSNko",
+            silence_rate: 0,
+          },
+        },
+        {
+          name: "face",
+          llm_label: "emotion",
+          connector: "avatar",
+        },
+        {
+          name: "move_go2_action",
+          llm_label: "unitree_go2_action",
+          connector: "unitree_sdk",
+        },
+        {
+          name: "selfie",
+          llm_label: "selfie",
+          implementation: "passthrough",
+          connector: "selfie",
+        },
+      ],
+
+      backgrounds: [
+        { type: "UnitreeGo2State" },
+      ],
+
+      lifecycle_hooks: [
+        {
+          hook_type: "on_startup",
+          handler_type: "message",
+          handler_config: {
+            message: "Hello! I'm MyRobot. Nice to meet you — what's your name?",
+          },
+        },
+        {
+          hook_type: "on_entry",
+          handler_type: "message",
+          handler_config: {
+            message: "Welcome back! Tell me your name and I'll remember you.",
+          },
+        },
+      ],
+
+      // WebSim debug interface (per-mode in multi-mode configs).
+      simulators: [
+        {
+          type: "WebSim",
+          config: {
+            host: "0.0.0.0",
+            port: 8000,
+            tick_rate: 100,
+            auto_reconnect: true,
+            debug_mode: false,
+          },
+        },
+      ],
+    },
+
+    // ======================================================
+    // CONVERSATION — chat + external tools (MCP)
+    // ======================================================
+    conversation: {
+      display_name: "Conversation Mode",
+      description: "Open chat with weather, maps, and GitHub knowledge",
+      system_prompt_base: "You are MyRobot in conversation mode. Engage in friendly dialogue, ask follow-up questions, and use your external tools when relevant:\n- Use the weather tool when the user asks about weather, forecasts, or what to wear outside.\n- Use google-maps when the user asks for directions, distances, or location info.\n- Use github when the user asks about a repo, an issue, or code on GitHub.\nBe concise and warm. Always SPEAK on voice turns. If a known person is in view (FacePresence), greet them by name once.",
+      save_interactions: true,
+      hertz: 1,
+
+      cortex_llm: {
+        type: "OpenAILLM",
+        config: {
+          agent_name: "MyRobot",
+          history_length: 20,
+          model: "gpt-4.1",
+        },
+      },
+
+      agent_inputs: [
+        { type: "UnitreeGo2Odom" },
+        { type: "UnitreeGo2Battery" },
+        { type: "GoogleASRRTSPInput" },
+        { type: "VLMVilaRTSP" },
+        { type: "FacePresence" },
+      ],
+
+      action_execution_mode: "concurrent",
+      agent_actions: [
+        {
+          name: "speak",
+          llm_label: "speak",
+          connector: "elevenlabs_tts",
+          config: {
+            voice_id: "TbMNBJ27fH2U0VgpSNko",
+            silence_rate: 30,
+          },
+        },
+        {
+          name: "face",
+          llm_label: "emotion",
+          connector: "avatar",
+        },
+      ],
+
+      backgrounds: [
+        { type: "UnitreeGo2State" },
+      ],
+
+      // External tool integrations — MCP servers
+      mcp_servers: [
+        {
+          name: "weather",
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@h1deya/mcp-server-weather"],
+        },
+        {
+          name: "google-maps",
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-google-maps"],
+          env: {
+            GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY}", // pragma: allowlist secret
+          },
+        },
+        {
+          name: "github",
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp/",
+          headers: {
+            Authorization: "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}", // pragma: allowlist secret
+          },
+        },
+      ],
+
+      lifecycle_hooks: [
+        {
+          hook_type: "on_entry",
+          handler_type: "message",
+          handler_config: {
+            message: "I'm ready to chat. Ask me about the weather, directions, or a GitHub repo!",
+          },
+        },
+        {
+          hook_type: "on_exit",
+          handler_type: "message",
+          handler_config: {
+            message: "Great talking with you!",
+          },
+        },
+      ],
+
+      simulators: [
+        {
+          type: "WebSim",
+          config: {
+            host: "0.0.0.0",
+            port: 8000,
+            tick_rate: 100,
+            auto_reconnect: true,
+            debug_mode: false,
+          },
+        },
+      ],
+    },
+
+    // ======================================================
+    // SLAM — autonomous exploration with LIDAR
+    // ======================================================
+    slam: {
+      display_name: "SLAM Exploration",
+      description: "Autonomous mapping and exploration using LIDAR",
+      system_prompt_base: "You are MyRobot in exploration mode. Map and describe surroundings naturally. Avoid obstacles. Only call remember_location when the user explicitly says so (e.g., 'remember this spot'). Greet known faces once.",
+      hertz: 1,
+
+      // Per-mode override: zero history so movement decisions
+      // don't carry chat context that could derail planning.
+      cortex_llm: {
+        type: "OpenAILLM",
+        config: {
+          agent_name: "MyRobot",
+          history_length: 0,
+          model: "gpt-4.1",
+        },
+      },
+
+      agent_inputs: [
+        { type: "UnitreeGo2Odom" },
+        { type: "UnitreeGo2Battery" },
+        { type: "GoogleASRRTSPInput" },
+        { type: "VLMVilaRTSP" },
+        { type: "SimplePaths" },
+        { type: "FacePresence" },
+      ],
+
+      action_execution_mode: "concurrent",
+      agent_actions: [
+        {
+          name: "speak",
+          llm_label: "speak",
+          connector: "elevenlabs_tts",
+          config: {
+            voice_id: "TbMNBJ27fH2U0VgpSNko",
+            silence_rate: 20,
+          },
+        },
+        {
+          name: "face",
+          llm_label: "emotion",
+          connector: "avatar",
+        },
+        {
+          name: "remember_location",
+          llm_label: "remember_location",
+          connector: "unitree_go2_location",
+        },
+      ],
+
+      backgrounds: [
+        { type: "UnitreeGo2State" },
+        { type: "UnitreeGo2LidarLocalization" },
+        { type: "UnitreeGo2Navigation" },
+        { type: "UnitreeGo2Locations" },
+        { type: "UnitreeGo2FrontierExploration" },
+      ],
+
+      lifecycle_hooks: [
+        // Start the SLAM stack on entry, tear it down on exit.
+        {
+          hook_type: "on_startup",
+          handler_type: "function",
+          handler_config: {
+            module_name: "slam_hook",
+            function: "start_slam_hook",
+          },
+          priority: 1,
+        },
+        {
+          hook_type: "on_startup",
+          handler_type: "message",
+          handler_config: {
+            message: "Booting exploration. I'll start mapping shortly.",
+          },
+          priority: 0,
+        },
+        {
+          hook_type: "on_entry",
+          handler_type: "function",
+          handler_config: {
+            module_name: "slam_hook",
+            function: "start_slam_hook",
+          },
+          priority: 1,
+        },
+        {
+          hook_type: "on_entry",
+          handler_type: "message",
+          handler_config: {
+            message: "Switching to exploration. Mapping the environment now.",
+          },
+          priority: 0,
+        },
+        {
+          hook_type: "on_exit",
+          handler_type: "function",
+          handler_config: {
+            module_name: "slam_hook",
+            function: "stop_slam_hook",
+          },
+          timeout_seconds: 15,
+          priority: 1,
+        },
+        {
+          hook_type: "on_exit",
+          handler_type: "message",
+          handler_config: {
+            message: "Exploration done. Mapping stopped.",
+          },
+          priority: 0,
+        },
+      ],
+
+      simulators: [
+        {
+          type: "WebSim",
+          config: {
+            host: "0.0.0.0",
+            port: 8000,
+            tick_rate: 100,
+            auto_reconnect: true,
+            debug_mode: false,
+          },
+        },
+      ],
+    },
+  },
+
+  // ----- Transition rules -----
+  transition_rules: [
+    // welcome → conversation
+    {
+      from_mode: "welcome",
+      to_mode: "conversation",
+      transition_type: "input_triggered",
+      trigger_keywords: ["talk", "chat", "conversation", "tell me", "weather", "directions"],
+      priority: 2,
+      cooldown_seconds: 3.0,
+    },
+    // welcome → slam
+    {
+      from_mode: "welcome",
+      to_mode: "slam",
+      transition_type: "input_triggered",
+      trigger_keywords: ["explore", "map", "look around", "slam", "wander"],
+      priority: 3,
+      cooldown_seconds: 5.0,
+    },
+    // conversation → slam
+    {
+      from_mode: "conversation",
+      to_mode: "slam",
+      transition_type: "input_triggered",
+      trigger_keywords: ["explore", "map the room", "go look around"],
+      priority: 3,
+      cooldown_seconds: 5.0,
+    },
+    // slam → conversation
+    {
+      from_mode: "slam",
+      to_mode: "conversation",
+      transition_type: "input_triggered",
+      trigger_keywords: ["stop exploring", "come back", "chat", "talk", "done mapping"],
+      priority: 2,
+      cooldown_seconds: 5.0,
+    },
+    // Safety: low battery → back to welcome (so charging UI shows)
+    {
+      from_mode: "*",
+      to_mode: "welcome",
+      transition_type: "context_aware",
+      context_conditions: { battery_level: { max: 20 } },
+      priority: 10,
+      cooldown_seconds: 30.0,
+    },
+    // Universal reset
+    {
+      from_mode: "*",
+      to_mode: "welcome",
+      transition_type: "input_triggered",
+      trigger_keywords: ["reset", "start over", "restart", "welcome mode"],
+      priority: 5,
+      cooldown_seconds: 10.0,
+    },
+  ],
+
+  // WebSim is configured per-mode above so it stays available in
+  // every mode while passing the multi-mode schema's strict
+  // top-level additionalProperties check.
+}
